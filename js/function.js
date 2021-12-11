@@ -8,8 +8,8 @@
 
 	const getElement = id => document.getElementById(id);
 
-	const getCoordinates = el => {
-		const coords = el.getBoundingClientRect();
+	const getCoordinates = element => {
+		const coords = element.getBoundingClientRect();
 
 		return {
 			left: coords.left + window.pageXOffset,
@@ -18,18 +18,13 @@
 			bottom: coords.bottom + window.pageYOffset
 		};
 	};
-
-
 	const humanField = getElement('field_human');
 
 	const computerField = getElement('field_computer');
 
 	class Field {
-
-		static FIELD_SIDE = 330;
-
+		static FIELD_SIDE = 365;
 		static SHIP_SIDE = 33;
-
 		static SHIP_DATA = {
 			fourdeck: [1, 4],
 			tripledeck: [2, 3],
@@ -213,6 +208,7 @@
 				if (Object.keys(player.squadron).length == 10) {
 					buttonPlay.hidden = false;
 				}
+
 			}
 		}
 	}
@@ -453,7 +449,6 @@
 
 			obj.top = Math.round(ftop / Field.SHIP_SIDE) * Field.SHIP_SIDE;
 			obj.left = Math.round(fleft / Field.SHIP_SIDE) * Field.SHIP_SIDE;
-			// переводим значение в координатах матрицы
 			obj.x = obj.top / Field.SHIP_SIDE;
 			obj.y = obj.left / Field.SHIP_SIDE;
 
@@ -480,4 +475,519 @@
 
 
 
+	class Controller {
+		static START_POINTS = [
+			[ [6,0], [2,0], [0,2], [0,6] ],
+			[ [3,0], [7,0], [9,2], [9,6] ]
+		];
+		static SERVICE_TEXT = getElement('service_text');
+
+		constructor() {
+			this.player = '';
+			this.opponent = '';
+			this.text = '';
+			this.coordsRandomHit = [];
+			this.coordsFixedHit = [];
+			this.coordsAroundHit = [];
+			this.resetTempShip();
+		}
+
+
+		static showServiceText = text => {
+			Controller.SERVICE_TEXT.innerHTML = text;
+		}
+
+		static getCoordsIcon = element => {
+			const x = element.style.top.slice(0, -2) / Field.SHIP_SIDE;
+			const y = element.style.left.slice(0, -2) / Field.SHIP_SIDE;
+			return [x, y];
+		}
+		static removeElementArray = (arr, [x, y]) => {
+			return arr.filter(item => item[0] != x || item[1] != y);
+		}
+
+		init() {
+			const random = Field.getRandom(1);
+			this.player = (random == 0) ? human : computer;
+			this.opponent = (this.player === human) ? computer : human;
+
+			this.setCoordsShot();
+
+
+			if (!checkHandlerController) {
+				computerField.addEventListener('click', this.makeShot.bind(this));
+				computerField.addEventListener('contextmenu', this.setUselessCell.bind(this));
+				checkHandlerController = true;
+			}
+
+			if (this.player === human) {
+				compShot = false;
+				this.text = "You shoot first";
+			} else {
+				compShot = true;
+				this.text = 'Computer shoot first';
+				setTimeout(() => this.makeShot(), 2000);
+			}
+			Controller.showServiceText(this.text);
+		}
+
+		setCoordsShot() {
+			for (let i = 0; i < 10; i++) {
+				for(let j = 0; j < 10; j++) {
+					this.coordsRandomHit.push([i, j]);
+				}
+			}
+
+			this.coordsRandomHit.sort((a, b) => Math.random() - 0.5);
+			let x, y;
+			for (let arr of Controller.START_POINTS[0]) {
+				x = arr[0]; y = arr[1];
+				while (x <= 9 && y <= 9) {
+					this.coordsFixedHit.push([x, y]);
+					x = (x <= 9) ? x : 9;
+					y = (y <= 9) ? y : 9;
+					x++; y++;
+				}
+			}
+
+			for (let arr of Controller.START_POINTS[1]) {
+				x = arr[0]; y = arr[1];
+				while(x >= 0 && x <= 9 && y <= 9) {
+					this.coordsFixedHit.push([x, y]);
+					x = (x >= 0 && x <= 9) ? x : (x < 0) ? 0 : 9;
+					y = (y <= 9) ? y : 9;
+					x--; y++;
+				}
+			}
+			this.coordsFixedHit = this.coordsFixedHit.reverse();
+		}
+
+		setCoordsAroundHit(x, y, coords) {
+			let {firstHit,
+				kx,
+				ky
+			} = this.tempShip;
+			if (firstHit.length == 0) {
+				this.tempShip.firstHit = [x, y];
+			} else if (kx == 0 && ky == 0) {
+				this.tempShip.kx = (Math.abs(firstHit[0] - x) == 1) ? 1 : 0;
+				this.tempShip.ky = (Math.abs(firstHit[1] - y) == 1) ? 1 : 0;
+			}
+
+			for (let coord of coords) {
+				x = coord[0]; y = coord[1];
+				if (x < 0 || x > 9 || y < 0 || y > 9){
+					continue;
+				}
+				if (human.matrix[x][y] != 0 && human.matrix[x][y] != 1){
+					continue;
+				}
+				this.coordsAroundHit.push([x, y]);
+			}
+		}
+
+		isShipSunk() {
+			let obj = Object.values(human.squadron)
+				.reduce((a, b) => a.arrDecks.length > b.arrDecks.length ? a : b);
+			if (this.tempShip.hits >= obj.arrDecks.length || this.coordsAroundHit.length == 0) {
+				this.markUselessCellAroundShip();
+				this.coordsAroundHit = [];
+				this.resetTempShip();
+			}
+		}
+
+		setUselessCell(element) {
+			element.preventDefault();
+
+			if (element.which != 3 || compShot) {
+				return;
+			}
+			const coords = this.transformCoordsInMatrix(element, computer);
+			const check = this.checkingEmptyCell(coords);
+			if (check) {
+				this.showIcons(this.opponent, coords, 'shaded-cell');
+			}
+		}
+
+		checkingEmptyCell(coords) {
+
+			if (computer.matrix[coords[0]][coords[1]] > 1) {
+				return false;
+			}
+
+
+			const icons = this.opponent.field.querySelectorAll('.shaded-cell');
+			if (icons.length == 0) return true;
+
+			for (let icon of icons) {
+
+				const [x, y] = Controller.getCoordsIcon(icon);
+				if (coords[0] == x && coords[1] == y) {
+
+					const f = (new Error()).stack.split('\n')[2].trim().split(' ')[1];
+					if (f == 'Controller.setUselessCell') {
+						// удаляем маркер пустой клетки
+						icon.remove();
+					} else {
+						// на 0.5s окрашиваем маркер в красный цвет
+						icon.classList.add('shaded-cell_red');
+						setTimeout(() => { icon.classList.remove('shaded-cell_red') }, 500);
+					}
+					return false;
+				}
+			}
+			return true;
+		}
+
+
+		markUselessCell(coords) {
+			let n = 1;
+			let x;
+			let y;
+			for (let tempCoord of coords) {
+				x = tempCoord[0];
+				y = tempCoord[1];
+				if (x < 0 || x > 9 || y < 0 || y > 9) continue;
+				if (human.matrix[x][y] == 2 || human.matrix[x][y] == 3) continue;
+				human.matrix[x][y] = 2;
+				setTimeout(() => this.showIcons(human, tempCoord, 'shaded-cell'), 350 * n);
+				this.removeCoordsFromArrays(tempCoord);
+				n++;
+			}
+		}
+
+		transformCoordsInMatrix(e, self) {
+			const x = Math.trunc((e.pageY - self.fieldTop) / Field.SHIP_SIDE);
+			const y = Math.trunc((e.pageX - self.fieldLeft) / Field.SHIP_SIDE);
+			return [x, y];
+		}
+
+		removeCoordsFromArrays(coords) {
+			if (this.coordsAroundHit.length > 0) {
+				this.coordsAroundHit = Controller.removeElementArray(this.coordsAroundHit, coords);
+			}
+			if (this.coordsFixedHit.length > 0) {
+				this.coordsFixedHit = Controller.removeElementArray(this.coordsFixedHit, coords);
+			}
+			this.coordsRandomHit = Controller.removeElementArray(this.coordsRandomHit, coords);
+		}
+
+
+		markUselessCellAroundShip(){
+
+			const {hits, kx, ky, x0, y0} = this.tempShip;
+			let coords;
+
+
+			if (this.tempShip.hits == 1) {
+				coords = [
+					[x0 - 1, y0],
+					[x0 + 1, y0],
+					[x0, y0 - 1],
+					[x0, y0 + 1]
+				];
+
+			} else {
+				coords = [
+					[x0 - kx, y0 - ky],
+					[x0 + kx * hits, y0 + ky * hits]
+				];
+			}
+			this.markUselessCell(coords);
+		}
+
+		showIcons(opponent, [x, y], iconClass) {
+			const field = opponent.field;
+			if (iconClass === 'dot' || iconClass === 'red-cross') {
+				setTimeout(() => createElement(), 400);
+			} else {
+				createElement();
+			}
+			function createElement() {
+				const span = document.createElement('span');
+				span.className = `icon-field ${iconClass}`;
+				span.style.cssText = `left:${y * Field.SHIP_SIDE}px; top:${x * Field.SHIP_SIDE}px;`;
+				field.appendChild(span);
+			}
+		}
+
+		showExplosion(x, y) {
+			this.showIcons(this.opponent, [x, y], 'explosion');
+			const explosion = this.opponent.field.querySelector('.explosion');
+			explosion.classList.add('active');
+			setTimeout(() => explosion.remove(), 430);
+		}
+
+		getCoordsForShot() {
+			const coords = (this.coordsAroundHit.length > 0) ? this.coordsAroundHit.pop() : (this.coordsFixedHit.length > 0) ? this.coordsFixedHit.pop() : this.coordsRandomHit.pop();
+			this.removeCoordsFromArrays(coords);
+			return coords;
+		}
+
+		resetTempShip() {
+			this.tempShip = {
+				hits: 0,
+				firstHit: [],
+				kx: 0,
+				ky: 0
+			};
+		}
+
+		makeShot(event) {
+			let x, y;
+
+			if (event !== undefined) {
+
+				if (event.which != 1 || compShot){
+					return;
+				}
+
+
+				([x, y] = this.transformCoordsInMatrix(event, this.opponent));
+
+
+				const check = this.checkingEmptyCell([x, y]);
+				if (!check) return;
+			} else {
+
+				([x, y] = this.getCoordsForShot());
+			}
+
+
+			this.showExplosion(x, y);
+
+			const cords	= this.opponent.matrix[x][y];
+			switch(cords) {
+				case 0:
+					this.missShot(x, y);
+					break;
+				case 1:
+					this.hitShip(x, y);
+					break;
+				case 3:
+				case 4:
+					Controller.showServiceText('This cell is clear');
+					break;
+			}
+		}
+
+		missShot(x, y) {
+			let text = '';
+
+			this.showIcons(this.opponent, [x, y], 'dot');
+			this.opponent.matrix[x][y] = 3;
+
+
+			if (this.player === human) {
+				text = 'You have missed. Computer shot .';
+				this.player = computer;
+				this.opponent = human;
+				compShot = true;
+				setTimeout(() => this.makeShot(), 2000);
+			} else {
+				text = 'Computer has missed. Your shot!.';
+
+
+				if (this.coordsAroundHit.length == 0 && this.tempShip.hits > 0) {
+
+					this.markUselessCellAroundShip();
+					this.resetTempShip();
+				}
+				this.player = human;
+				this.opponent = computer;
+				compShot = false;
+			}
+			setTimeout(() => Controller.showServiceText(text), 400);
+		}
+
+		hitShip(x, y) {
+			let text = '';
+
+			this.showIcons(this.opponent, [x, y], 'red-cross');
+			this.opponent.matrix[x][y] = 4;
+
+			text = (this.player === human) ? 'Great! you has hit point.' : 'Computer has hit point. Now computer is hitting ';
+			setTimeout(() => Controller.showServiceText(text), 400);
+
+
+			outerloop:
+			for (let name in this.opponent.squadron) {
+				const dataShip = this.opponent.squadron[name];
+				for (let value of dataShip.arrDecks) {
+
+					if (value[0] != x || value[1] != y) {
+						continue;
+					}
+					dataShip.hits++;
+					if (dataShip.hits < dataShip.arrDecks.length) {
+						break outerloop;
+					}
+
+					if (this.opponent === human) {
+						this.tempShip.x0 = dataShip.x;
+						this.tempShip.y0 = dataShip.y;
+					}
+
+					delete this.opponent.squadron[name];
+					break outerloop;
+				}
+			}
+
+
+			if (Object.keys(this.opponent.squadron).length == 0) {
+				if (this.opponent === human) {
+					text = 'Its sad . You have lost this shipment';
+
+					for (let name in computer.squadron) {
+						const dataShip = computer.squadron[name];
+						Ships.showShip(computer, name, dataShip.x, dataShip.y, dataShip.kx );
+					}
+				} else {
+					text = 'Congratulation! You have won this shipment';
+				}
+				Controller.showServiceText(text);
+
+				buttonNewGame.hidden = false;
+
+			} else if (this.opponent === human) {
+				let coords;
+				this.tempShip.hits++;
+
+
+				coords = [
+					[x - 1, y - 1],
+					[x - 1, y + 1],
+					[x + 1, y - 1],
+					[x + 1, y + 1]
+				];
+				this.markUselessCell(coords);
+
+
+				coords = [
+					[x - 1, y],
+					[x + 1, y],
+					[x, y - 1],
+					[x, y + 1]
+				];
+				this.setCoordsAroundHit(x, y, coords);
+
+
+				this.isShipSunk();
+
+
+				setTimeout(() => this.makeShot(), 2000);
+			}
+		}
+	}
+
+
+
+
+	const instruction = getElement('instruction');
+	const shipsCollection = getElement('ships_collection');
+	const initialShips = document.querySelector('.wrap + .initial-ships');
+	const toptext = getElement('text_top');
+	const buttonPlay = getElement('play');
+	const buttonNewGame = getElement('newgame');
+	const human = new Field(humanField);
+
+	let computer = {};
+
+	let control = null;
+
+	getElement('type_placement').addEventListener('click', function(e) {
+
+		if (e.target.tagName != 'SPAN') {
+			return;
+		}
+
+
+		buttonPlay.hidden = true;
+
+		human.clearField();
+
+
+		let initialShipsClone = '';
+
+		const type = e.target.dataset.target;
+
+		const typeGeneration = {
+			random() {
+				shipsCollection.hidden = true;
+				human.randomLocationShips();
+			},
+			manually() {
+
+				let value = !shipsCollection.hidden;
+
+
+				if (shipsCollection.children.length > 1) {
+					shipsCollection.removeChild(shipsCollection.lastChild);
+				}
+
+
+				if (!value) {
+					initialShipsClone = initialShips.cloneNode(true);
+					shipsCollection.appendChild(initialShipsClone);
+					initialShipsClone.hidden = false;
+				}
+
+				shipsCollection.hidden = value;
+			}
+		};
+
+		typeGeneration[type]();
+
+
+		const placement = new Placement();
+
+		placement.setObserver();
+	});
+
+	buttonPlay.addEventListener('click', function(e) {
+
+		buttonPlay.hidden = true;
+		instruction.hidden = true;
+
+		computerField.parentElement.hidden = false;
+		toptext.innerHTML = 'Ship fight between squadrons';
+
+		computer = new Field(computerField);
+
+		computer.clearField();
+		computer.randomLocationShips();
+
+		startGame = true;
+
+
+		if (!control) {
+			control = new Controller();
+		}
+
+		control.init();
+	});
+
+	buttonNewGame.addEventListener('click', function(e) {
+		toptext.innerHTML = 'Position of ships';
+		computerField.parentElement.hidden = true;
+
+		buttonNewGame.hidden = true;
+		instruction.hidden = false;
+
+		human.clearField();
+
+		Controller.SERVICE_TEXT.innerHTML = '';
+
+
+		startGame = false;
+		compShot = false;
+
+
+		control.coordsRandomHit = [];
+		control.coordsFixedHit = [];
+		control.coordsAroundHit = [];
+		control.resetTempShip();
+	});
+
+	
 })();
